@@ -2,6 +2,7 @@ import os
 import uuid
 from typing import List, Optional
 
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -19,6 +20,15 @@ if not DATABASE_URL:
 
 engine = create_async_engine(DATABASE_URL)
 app = FastAPI(title="AI Interview Trainer API", version="1.2.0")  # Steg 12
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 # --- Datamodeller ---
 class StartSessionRequest(BaseModel):

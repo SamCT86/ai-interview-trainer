@@ -15,3 +15,12 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# Node/Next (frontend)
+apps/frontend/node_modules/
+apps/frontend/.next/
+apps/frontend/out/
+apps/frontend/.env.local
+
+# Monorepo safeguard
+node_modules/
