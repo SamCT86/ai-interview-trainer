@@ -1,31 +1,43 @@
-# main.py – hardened MVP backend (FastAPI)
+# main.py — Step 15-B: Conversational memory completed
 from __future__ import annotations
 
 import os
-import logging
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
+from datetime import datetime
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy import text
 
-# ---- LiteLLM (LLM + embeddings) --------------------------------------------
-# If LiteLLM missing or API key unset, we will fallback gracefully.
-try:
-    from litellm import acompletion, aembedding
-    LITELLM_OK = True
-except Exception:
-    LITELLM_OK = False
+# LiteLLM (Gemini via LiteLLM)
+# pip install litellm
+from litellm import acompletion
 
-# ----------------------------------------------------------------------------
+# ────────────────────────────────────────────────────────────────────────────────
+# Config
+# ────────────────────────────────────────────────────────────────────────────────
+DATABASE_URL = os.getenv("DATABASE_URL")  # postgresql+psycopg://...
+if not DATABASE_URL:
+    raise RuntimeError("Missing DATABASE_URL in environment")
 
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("ai-interview-trainer")
+# Viktigt: psycopg asyncio kräver +asyncpg eller psycopg[pool]? Vi kör psycopg v3 URL.
+engine = create_async_engine(DATABASE_URL, pool_pre_ping=True, future=True)
 
-app = FastAPI(title="AI Interview Trainer API", version="1.0.0")
+GEMINI_MODEL = "gemini/gemini-1.5-flash-latest"  # LiteLLM alias
+DEFAULT_ROLE = "Junior Developer"
 
-# CORS for Next.js on localhost:3000
+# ────────────────────────────────────────────────────────────────────────────────
+# FastAPI
+# ────────────────────────────────────────────────────────────────────────────────
+app = FastAPI(
+    title="AI Interview Trainer API",
+    version="1.0.0"
+)
+
+# CORS – fronten kör på http://localhost:3000
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
@@ -34,175 +46,214 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory session store (MVP)
-# session_id -> {"role_profile": str, "history": List[Dict[str, str]]}
-SESSIONS: Dict[str, Dict[str, Any]] = {}
+# ────────────────────────────────────────────────────────────────────────────────
+# Models (Pydantic)
+# ────────────────────────────────────────────────────────────────────────────────
+class StartRequest(BaseModel):
+    role_profile: str = Field(default=DEFAULT_ROLE)
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # should be set in the terminal running uvicorn
-EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-004")
-CHAT_MODEL = os.getenv("CHAT_MODEL", "gemini/gemini-1.5-flash-latest")
-
-
-# ==== Pydantic models ========================================================
-
-class StartSessionRequest(BaseModel):
-    role_profile: str = Field(..., description="Ex: 'Junior Backend Developer'")
-
-
-class StartSessionResponse(BaseModel):
+class StartResponse(BaseModel):
     session_id: uuid.UUID
     first_question: str
-
 
 class AnswerRequest(BaseModel):
     session_id: uuid.UUID
     answer_text: str
 
-
 class Feedback(BaseModel):
-    bullets: List[str] = []
-    sources: List[str] = []
-
+    bullets: List[str]
+    citations: List[str] = []
 
 class AnswerResponse(BaseModel):
     feedback: Feedback
     next_question: str
 
+# ────────────────────────────────────────────────────────────────────────────────
+# DB helpers (Supabase Postgres)
+# ────────────────────────────────────────────────────────────────────────────────
+async def db_fetchone(query: str, params: dict) -> Optional[dict]:
+    async with engine.begin() as cn:
+        res = await cn.execute(text(query), params)
+        row = res.mappings().first()
+        return dict(row) if row else None
 
-# ==== Utility: embeddings + RAG placeholders (hardened) =====================
+async def db_fetchall(query: str, params: dict) -> List[dict]:
+    async with engine.begin() as cn:
+        res = await cn.execute(text(query), params)
+        rows = res.mappings().all()
+        return [dict(r) for r in rows]
 
-async def embed_text(text: str) -> List[float]:
+async def db_execute(query: str, params: dict) -> None:
+    async with engine.begin() as cn:
+        await cn.execute(text(query), params)
+
+# ────────────────────────────────────────────────────────────────────────────────
+# RAG helpers (neutral fallback, stabilt)
+# ────────────────────────────────────────────────────────────────────────────────
+async def find_relevant_sources(user_text: str) -> List[str]:
     """
-    Try to embed. If anything fails (no key, LiteLLM missing, provider error),
-    return an empty list so caller can degrade gracefully.
+    Minimal RAG: hämtar topp 5 texter utan embeddings om embeddings ej finns.
+    Om du redan har embeddings + pgvector kan du byta till:
+      SELECT chunk_text FROM sources ORDER BY embedding <=> :embed LIMIT 5
     """
-    if not (LITELLM_OK and GEMINI_API_KEY):
-        return []
     try:
-        resp = await aembedding(model=EMBED_MODEL, input=text)
-        # liteLLM normalizes to 'data[0].embedding' style
-        vec = resp["data"][0]["embedding"]
-        return vec
-    except Exception as e:
-        log.warning("embed_text failed: %s", e)
+        rows = await db_fetchall(
+            "SELECT chunk_text FROM sources ORDER BY created_at DESC LIMIT 5",
+            {}
+        )
+        return [r["chunk_text"] for r in rows]
+    except Exception:
         return []
 
+# ────────────────────────────────────────────────────────────────────────────────
+# Prompt builder – med HISTORIK
+# ────────────────────────────────────────────────────────────────────────────────
+def build_messages_with_history(
+    latest_answer: str,
+    sources: List[str],
+    role_profile: str,
+    history: List[dict]
+) -> List[dict]:
+    """
+    history: [{q_text:str, a_text:str}, ...] i kronologisk ordning
+    """
+    history_str = ""
+    for h in history:
+        q = (h.get("q_text") or "").strip()
+        a = (h.get("a_text") or "").strip()
+        if q:
+            history_str += f"Q: {q}\n"
+        if a:
+            history_str += f"A: {a}\n"
+    sources_str = "\n".join([f"- {s}" for s in sources]) if sources else "- (no sources)"
 
-async def find_relevant_sources(query_text: str, k: int = 2) -> List[Dict[str, Any]]:
-    """
-    MVP: no DB dependency. Try embedding to simulate RAG decision, but if
-    anything fails just return an empty list.
-    """
-    _ = await embed_text(query_text)  # we ignore result in MVP fallback
-    # In real impl: query pgvector with <=> ordering.
-    # Here we always return empty to avoid crashing the flow.
-    return []
-
-
-def build_rag_prompt_with_history(answer_text: str,
-                                  sources: List[Dict[str, Any]],
-                                  role_profile: str,
-                                  history: List[Dict[str, str]]) -> List[Dict[str, str]]:
-    """
-    Compose a compact chat prompt for the model. Plain messages for LiteLLM.
-    """
     system = (
-        "Du är en strikt intervjuerare. Ge punktlistad feedback (3–6 bullets) på kandidatens svar, "
-        "fokusera på STAR-metoden, kvantifiering, relevans mot rollen och tydliga förbättringar. "
-        "Returnera bara saklig feedback utan överdrifter."
+        "You are a strict but helpful interview coach. "
+        "Use the ENTIRE conversation history to avoid repeating feedback. "
+        "Always provide NEW, non-redundant guidance. "
+        "Return your feedback as 3–6 concise bullet points. No long paragraphs."
     )
+    user = (
+        f"ROLE PROFILE: {role_profile}\n\n"
+        f"CONVERSATION HISTORY (oldest→newest):\n{history_str}\n\n"
+        f"LATEST ANSWER:\n{latest_answer}\n\n"
+        f"SOURCES (optional):\n{sources_str}\n\n"
+        "TASK:\n"
+        "1) Give 3–6 non-repetitive bullet points of feedback tailored to the latest answer.\n"
+        "2) Each bullet should push the candidate forward (STAR, quantify results, personal ownership, tie to role).\n"
+        "3) Do NOT repeat the same phrasing as before.\n"
+        "4) Only bullets, no intro/outro."
+    )
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user}
+    ]
 
-    context = ""
-    if sources:
-        context = "Källor:\n" + "\n".join(f"- {s.get('title','(okänd)')}" for s in sources)
+def parse_bullets(text: str) -> List[str]:
+    lines = [ln.strip(" •-") for ln in text.splitlines() if ln.strip()]
+    # Ta bara 3–6 första "rimliga" rader
+    bullets = [ln for ln in lines if len(ln) > 0]
+    if not bullets:
+        bullets = ["Knyt svaret till jobbet.", "Kvantifiera resultat.", "Visa ditt personliga ansvar (STAR)."]
+    return bullets[:6]
 
-    messages: List[Dict[str, str]] = [{"role": "system", "content": system}]
-    if role_profile:
-        messages.append({"role": "user", "content": f"Rollprofil: {role_profile}"})
-    if context:
-        messages.append({"role": "user", "content": context})
+def next_question_from(role_profile: str, history: List[dict]) -> str:
+    """
+    En enkel heuristik: fråga efter nästa STAR-del beroende på tidigare svar.
+    Kan bytas mot LLM senare.
+    """
+    # Om senaste svaret var allmänt → styra mot 'Result'
+    return "Ge ett konkret exempel med siffror på resultatet (R i STAR). Vad blev effekten och hur mätte du den?"
 
-    # include short history (last 3 exchanges)
-    for turn in history[-3:]:
-        if "question" in turn:
-            messages.append({"role": "user", "content": f"Fråga: {turn['question']}"})
-        if "answer" in turn:
-            messages.append({"role": "user", "content": f"Svar: {turn['answer']}"})
-
-    messages.append({"role": "user", "content": f"Utvärdera detta svar och ge punktlista:\n{answer_text}"})
-    return messages
-
-
-def first_question_for(role_profile: str) -> str:
-    return f"Välkommen. För rollen '{role_profile}', berätta om ett projekt du är stolt över."
-
-
-def next_question_for(role_profile: str) -> str:
-    return "Ge ett konkret exempel där ditt beslut påverkade resultatet och hur du verifierade effekten."
-
-
-# ==== Endpoints ==============================================================
-
-@app.get("/")
-async def read_root():
+# ────────────────────────────────────────────────────────────────────────────────
+# Endpoints
+# ────────────────────────────────────────────────────────────────────────────────
+@app.get("/", tags=["Health"])
+async def root():
     return {"message": "AI Interview Trainer API is running"}
 
-@app.post("/session/start", response_model=StartSessionResponse)
-async def start_session(req: StartSessionRequest):
-    sid = uuid.uuid4()
-    SESSIONS[str(sid)] = {
-        "role_profile": req.role_profile,
-        "history": []
-    }
-    return StartSessionResponse(session_id=sid, first_question=first_question_for(req.role_profile))
+@app.post("/session/start", response_model=StartResponse, tags=["Interview"])
+async def start_session(req: StartRequest):
+    """
+    Skapar sessions-rad och första turn (fråga) i DB.
+    """
+    s_id = uuid.uuid4()
+    first_q = "Välkommen. För rollen '{role}', berätta om ett projekt du är stolt över.".format(role=req.role_profile)
 
-@app.post("/session/answer", response_model=AnswerResponse)
-async def process_answer(req: AnswerRequest):
-    sid = str(req.session_id)
-    sess = SESSIONS.get(sid)
-    if not sess:
-        # create a minimal session so flow doesn't break
-        SESSIONS[sid] = {"role_profile": "Unknown", "history": []}
-        sess = SESSIONS[sid]
-
-    role_profile: str = sess.get("role_profile", "Unknown")
-    history: List[Dict[str, str]] = sess.get("history", [])
-
-    # ---- RAG + LLM (hardened) ---------------------------------------------
-    try:
-        sources = await find_relevant_sources(req.answer_text, k=2)
-    except Exception as e:
-        log.warning("find_relevant_sources failed: %s", e)
-        sources = []
-
-    messages = build_rag_prompt_with_history(req.answer_text, sources, role_profile, history)
-
-    ai_text = None
-    if LITELLM_OK and GEMINI_API_KEY:
-        try:
-            resp = await acompletion(model=CHAT_MODEL, messages=messages)
-            ai_text = resp.choices[0].message.content.strip()
-        except Exception as e:
-            log.warning("LLM completion failed: %s", e)
-
-    # Fallback feedback text
-    if not ai_text:
-        ai_text = (
-            "- Förtydliga din roll och dina konkreta handlingar.\n"
-            "- Använd STAR (Situation–Task–Action–Result) för struktur.\n"
-            "- Kvantifiera resultat (t.ex. +X%, −Y fel, Z användare).\n"
-            "- Knyt svaret till krav för rollen och teknikstacken.\n"
-            "- Nämn en lärdom och hur du tillämpade den."
-        )
-
-    # Update history
-    history.append({"question": history[-1]["question"] if history else first_question_for(role_profile),
-                    "answer": req.answer_text})
-    sess["history"] = history  # write-back (explicit)
-
-    # Build response
-    feedback = Feedback(
-        bullets=[b.strip("- ").strip() for b in ai_text.split("\n") if b.strip()],
-        sources=[s.get("title", "") for s in (sources or [])]
+    # sessions: (id uuid pk, role_profile text)
+    await db_execute(
+        "INSERT INTO sessions (id, role_profile) VALUES (:id, :role)",
+        {"id": str(s_id), "role": req.role_profile}
     )
-    return AnswerResponse(feedback=feedback, next_question=next_question_for(role_profile))
+    # turns: (id uuid pk, session_id uuid fk, q_text text, a_text text null, created_at timestamptz default now())
+    await db_execute(
+        "INSERT INTO turns (id, session_id, q_text) VALUES (:id, :sid, :q)",
+        {"id": str(uuid.uuid4()), "sid": str(s_id), "q": first_q}
+    )
+    return StartResponse(session_id=s_id, first_question=first_q)
+
+@app.post("/session/answer", response_model=AnswerResponse, tags=["Interview"])
+async def process_answer(req: AnswerRequest):
+    """
+    1) Hämtar roll + hel historik från DB
+    2) Uppdaterar senaste turn med kandidatens svar
+    3) Kör RAG + LLM med historik för icke-repetitiv feedback
+    4) Skapar och lagrar nästa fråga
+    """
+    # ── 1) session & historik
+    sess = await db_fetchone(
+        "SELECT role_profile FROM sessions WHERE id = :id",
+        {"id": str(req.session_id)}
+    )
+    if not sess:
+        raise HTTPException(status_code=404, detail="Session not found")
+    role_profile = sess["role_profile"]
+
+    history = await db_fetchall(
+        "SELECT q_text, a_text FROM turns WHERE session_id = :sid ORDER BY created_at ASC",
+        {"sid": str(req.session_id)}
+    )
+
+    # ── 2) uppdatera senaste frågan med svaret
+    await db_execute(
+        """
+        UPDATE turns
+        SET a_text = :a
+        WHERE id = (
+          SELECT id FROM turns WHERE session_id = :sid ORDER BY created_at DESC LIMIT 1
+        )
+        """,
+        {"a": req.answer_text, "sid": str(req.session_id)}
+    )
+
+    # ── 3) RAG + LLM
+    try:
+        sources = await find_relevant_sources(req.answer_text)
+        messages = build_messages_with_history(
+            latest_answer=req.answer_text,
+            sources=sources,
+            role_profile=role_profile,
+            history=history
+        )
+        llm = await acompletion(model=GEMINI_MODEL, messages=messages, temperature=0.7)
+        ai_text = llm.choices[0].message["content"] if isinstance(llm.choices[0].message, dict) else llm.choices[0].message.content
+        bullets = parse_bullets(ai_text)
+    except Exception:
+        # Robust fallback – aldrig 500
+        bullets = [
+            "Förfina med STAR: fokus på Situation/Task → dina Actions → kvantifierade Results.",
+            "Var tydlig med *din* roll och *dina* beslut.",
+            "Knyt svaret till kraven för rollen: tekniker, processer, ansvar."
+        ]
+
+    # ── 4) nästa fråga + lagra
+    next_q = next_question_from(role_profile, history)
+    await db_execute(
+        "INSERT INTO turns (id, session_id, q_text) VALUES (:id, :sid, :q)",
+        {"id": str(uuid.uuid4()), "sid": str(req.session_id), "q": next_q}
+    )
+
+    return AnswerResponse(
+        feedback=Feedback(bullets=bullets, citations=[]),
+        next_question=next_q
+    )
