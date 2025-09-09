@@ -1,7 +1,9 @@
 # AI Interview Trainer (MVP)
 
+Practice real interviews with AI-powered questions and instant feedback.  
+
 An **AI-powered mock interview trainer** built with **FastAPI**, **Supabase (pgvector)** and **Next.js**.  
-Practice interviews, answer AI-generated questions, and receive instant structured feedback.
+Answer AI-generated questions and receive instant structured feedback.
 
 ---
 
