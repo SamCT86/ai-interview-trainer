@@ -20,14 +20,6 @@ Practice interviews, answer AI-generated questions, and receive instant structur
 
 ---
 
-## 🖼️ Screenshots
-*(lägg till egna bilder i `docs/`-mappen och byt ut filnamnen nedan)*
-
-![UI Example](docs/screenshot-ui.png)  
-![API Docs](docs/screenshot-api.png)
-
----
-
 ## 🛠️ Tech Stack
 - **Backend:** FastAPI, SQLAlchemy, Supabase (Postgres + pgvector), psycopg v3  
 - **AI/LLM:** Gemini 1.5 Flash via LiteLLM  
