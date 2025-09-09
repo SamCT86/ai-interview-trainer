@@ -5,11 +5,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from datetime import datetime
 
-# ===== CORS (MVP öppet) =====
+# ===== App & CORS =====
 app = FastAPI(title="AI Interview Trainer API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],   # MVP: öppet; strama åt senare
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -22,7 +22,6 @@ from sqlalchemy import text
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 DB_AVAILABLE = False
 engine = None
-
 if DATABASE_URL:
     try:
         engine = create_async_engine(
@@ -32,13 +31,13 @@ if DATABASE_URL:
         )
         DB_AVAILABLE = True
     except Exception:
-        logging.exception("DB engine init failed, using in-memory fallback")
+        logging.exception("DB engine init failed; using in-memory fallback")
         DB_AVAILABLE = False
 
-# ===== In-memory fallback store =====
+# ===== In-memory store =====
 mem_sessions: Dict[str, Dict] = {}
 
-# ===== Question sets =====
+# ===== Questions =====
 FIRST_QUESTIONS = {
     "Junior Developer": "Berätta kort om ett projekt där du använde React.",
     "Project Manager": "Hur prioriterar du backloggen inför en release?",
@@ -105,9 +104,7 @@ async def start_session(p: StartPayload):
                     {"id": sid, "role": role, "ts": datetime.utcnow()},
                 )
     except Exception:
-        logging.exception("DB write failed, switching to in-memory for this session")
-        global DB_AVAILABLE
-        DB_AVAILABLE = False
+        logging.exception("DB write failed, serving in-memory this session")
 
     mem_sessions[sid] = {"role": role, "idx": 0, "answers": []}
     return {"session_id": sid, "first_question": q}
