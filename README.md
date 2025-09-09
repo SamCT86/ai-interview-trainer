@@ -53,6 +53,9 @@ Kopiera kod
 cd apps/frontend
 npm install
 npm run dev
+
+---
+
 🧪 Testing
 Basic backend tests with pytest (session creation, DB connection).
 
