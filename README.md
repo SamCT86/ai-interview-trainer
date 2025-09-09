@@ -6,7 +6,7 @@ Practice interviews, answer AI-generated questions, and receive instant structur
 ---
 
 ## 🚀 Live Demo
-- **Frontend (Vercel):** https://ai-interview-trainer-frontend-f1gt19unm.vercel.app
+- **Frontend (Vercel):** https://ai-interview-trainer-front-git-0af047-sarmads-projects-f3142150.vercel.app/
 - **Backend (Render – API Docs):** https://ai-interview-trainer-api.onrender.com/docs
 
 ---
@@ -21,10 +21,11 @@ Practice interviews, answer AI-generated questions, and receive instant structur
 ---
 
 ## 🛠️ Tech Stack
-- **Backend:** FastAPI, SQLAlchemy, Supabase (Postgres + pgvector)  
+- **Backend:** FastAPI, SQLAlchemy, Supabase (Postgres + pgvector), psycopg v3  
 - **LLM:** Gemini 1.5 Flash (via LiteLLM)  
 - **Frontend:** Next.js (Vercel), TailwindCSS  
 - **Hosting:** Backend on Render, Frontend on Vercel  
+- **CORS:** localhost + `https://*.vercel.app`
 
 ---
 
