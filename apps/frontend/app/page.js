@@ -1,11 +1,11 @@
 ﻿"use client";
-
 import { useMemo, useState, useEffect } from "react";
 
 export default function Page() {
-  const backendBase = useMemo(() => {
-    return process.env.NEXT_PUBLIC_BACKEND_URL || "http://127.0.0.1:8000";
-  }, []);
+  const backendBase = useMemo(
+    () => process.env.NEXT_PUBLIC_BACKEND_URL || "http://127.0.0.1:8000",
+    []
+  );
 
   const [role, setRole] = useState("Junior Developer");
   const [sessionId, setSessionId] = useState(null);
@@ -16,11 +16,9 @@ export default function Page() {
   const [initLoading, setInitLoading] = useState(false);
   const [error, setError] = useState("");
 
-  // Lokal historik + UI-resultat
-  const [answers, setAnswers] = useState([]);   // [{q, a, fbBullets: []}]
+  const [answers, setAnswers] = useState([]); // {q,a,fbBullets}
   const [finalized, setFinalized] = useState(false);
 
-  // Backendrapport
   const [report, setReport] = useState(null);
   const [reportLoading, setReportLoading] = useState(false);
   const [reportError, setReportError] = useState("");
@@ -52,7 +50,7 @@ export default function Page() {
       lines.push(Communication: /100);
       lines.push(Overall: /100);
     } else {
-      lines.push(== Heuristisk poäng (lokal) ==);
+      lines.push("== Heuristisk poäng (lokal) ==");
       lines.push(Overall: /100);
     }
     if (rep?.final_summary) {
@@ -64,15 +62,9 @@ export default function Page() {
   };
 
   const hardReset = () => {
-    setSessionId(null);
-    setQuestion(null);
-    setAnswer("");
-    setFeedback(null);
-    setError("");
-    setAnswers([]);
-    setFinalized(false);
-    setReport(null);
-    setReportError("");
+    setSessionId(null); setQuestion(null); setAnswer("");
+    setFeedback(null); setError(""); setAnswers([]);
+    setFinalized(false); setReport(null); setReportError("");
     setReportLoading(false);
   };
 
@@ -80,21 +72,17 @@ export default function Page() {
     hardReset();
     setInitLoading(true);
     try {
-      const res = await fetch(${backendBase}/session/start, {
+      const r = await fetch(${backendBase}/session/start, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ role_profile: role }),
       });
-      if (!res.ok) {
-        const txt = await res.text();
-        throw new Error(Start failed:  );
-      }
-      const data = await res.json();
+      if (!r.ok) throw new Error(Start failed: );
+      const data = await r.json();
       setSessionId(data.session_id);
       setQuestion(data.first_question);
-      setError("");
     } catch (e) {
-      setError(e.message || "Något gick fel vid start av session.");
+      setError(e.message || "Kunde inte starta session.");
     } finally {
       setInitLoading(false);
     }
@@ -104,35 +92,24 @@ export default function Page() {
     if (!sessionId || !answer.trim()) return;
     setLoading(true);
     try {
-      const res = await fetch(${backendBase}/session/answer, {
+      const r = await fetch(${backendBase}/session/answer, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          session_id: sessionId,
-          answer_text: answer.trim(),
-        }),
+        body: JSON.stringify({ session_id: sessionId, answer_text: answer.trim() }),
       });
-      if (!res.ok) {
-        const txt = await res.text();
-        throw new Error(Answer failed:  );
-      }
-      const data = await res.json();
+      if (!r.ok) throw new Error(Answer failed: );
+      const data = await r.json();
 
       setAnswers((prev) => [
         ...prev,
-        {
-          q: question || "",
-          a: answer.trim(),
-          fbBullets: data?.feedback?.bullets || [],
-        },
+        { q: question || "", a: answer.trim(), fbBullets: data?.feedback?.bullets || [] },
       ]);
 
       setFeedback(data.feedback || null);
       setQuestion(data.next_question || null);
       setAnswer("");
-      setError("");
     } catch (e) {
-      setError(e.message || "Något gick fel när svaret skickades.");
+      setError(e.message || "Kunde inte skicka svaret.");
     } finally {
       setLoading(false);
     }
@@ -145,32 +122,24 @@ export default function Page() {
     }
   };
 
-  // När intervjun är slut: visa resultat + hämta slutrapport
+  // Auto-visa resultat + hämta /report
   useEffect(() => {
     const ended = sessionId && !question && !initLoading && !loading && answers.length > 0;
     if (!ended) return;
-
     setFinalized(true);
-
-    const fetchReport = async () => {
+    (async () => {
       try {
-        setReportLoading(true);
-        setReportError("");
-        const res = await fetch(${backendBase}/session//report);
-        if (!res.ok) {
-          const txt = await res.text();
-          throw new Error(Report failed:  );
-        }
-        const data = await res.json();
+        setReportLoading(true); setReportError("");
+        const r = await fetch(${backendBase}/session//report);
+        if (!r.ok) throw new Error(Report failed: );
+        const data = await r.json();
         setReport(data);
-      } catch (err) {
-        setReportError(err.message || "Kunde inte hämta slutrapporten.");
-        setReport(null);
+      } catch (e) {
+        setReport(null); setReportError(e.message || "Kunde inte hämta slutrapport.");
       } finally {
         setReportLoading(false);
       }
-    };
-    fetchReport();
+    })();
   }, [sessionId, question, initLoading, loading, answers.length, backendBase]);
 
   return (
@@ -192,25 +161,15 @@ export default function Page() {
             <option>Junior Developer</option>
             <option>Project Manager</option>
           </select>
-
           <p className="text-sm text-neutral-400 mt-3">
-            Välj roll och klicka på <span className="font-medium text-neutral-200">Starta intervju</span> för att börja.
+            Välj roll och klicka på <span className="font-medium text-neutral-200">Starta intervju</span>.
           </p>
-
           <div className="mt-4 flex items-center gap-3">
-            <button
-              onClick={startSession}
-              disabled={initLoading}
-              className="px-4 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-50"
-            >
+            <button onClick={startSession} disabled={initLoading}
+              className="px-4 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-50">
               {initLoading ? "Initierar..." : "Starta intervju"}
             </button>
-
-            {sessionId && (
-              <span className="text-xs text-neutral-400">
-                Session: {sessionId}
-              </span>
-            )}
+            {sessionId && <span className="text-xs text-neutral-400">Session: {sessionId}</span>}
           </div>
         </div>
 
@@ -232,11 +191,8 @@ export default function Page() {
             disabled={!sessionId || loading}
           />
           <div className="mt-3 flex justify-end">
-            <button
-              onClick={sendAnswer}
-              disabled={!sessionId || loading || !answer.trim()}
-              className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 disabled:opacity-50"
-            >
+            <button onClick={sendAnswer} disabled={!sessionId || loading || !answer.trim()}
+              className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 disabled:opacity-50">
               {loading ? "Skickar…" : "Skicka"}
             </button>
           </div>
@@ -248,7 +204,6 @@ export default function Page() {
             <p className="text-neutral-500">Ingen feedback ännu.</p>
           ) : (
             <div className="space-y-2">
-              <p className="text-neutral-200">{feedback.summary}</p>
               {Array.isArray(feedback.bullets) && feedback.bullets.length > 0 && (
                 <ul className="list-disc pl-6 space-y-1">
                   {feedback.bullets.map((b, i) => <li key={i}>{b}</li>)}
@@ -265,10 +220,15 @@ export default function Page() {
             {!finalized ? (
               <>
                 <p className="text-neutral-200 font-medium">Slut på frågor ✅</p>
-                <p className="text-neutral-400">Klicka nedan för att generera en sammanfattning och poäng.</p>
                 <div className="flex gap-3">
-                  <button onClick={() => setFinalized(true)} className="px-4 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-500">Visa resultat</button>
-                  <button onClick={startSession} className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20">Starta om intervju</button>
+                  <button onClick={() => setFinalized(true)}
+                    className="px-4 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-500">
+                    Visa resultat
+                  </button>
+                  <button onClick={startSession}
+                    className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20">
+                    Starta om intervju
+                  </button>
                 </div>
               </>
             ) : (
@@ -289,12 +249,6 @@ export default function Page() {
                   <p className="text-neutral-400">(Visar heuristisk poäng lokalt: <span className="font-semibold">{computeLocalScore(answers)}</span>/100)</p>
                 )}
 
-                {report?.final_summary && (
-                  <div className="rounded-xl border border-neutral-800 p-3 bg-neutral-900">
-                    <p className="text-neutral-200 whitespace-pre-wrap">{report.final_summary}</p>
-                  </div>
-                )}
-
                 <div className="rounded-xl border border-neutral-800 p-3 bg-neutral-900 max-h-64 overflow-auto">
                   <ol className="list-decimal pl-5 space-y-2">
                     {answers.map((it, idx) => (
@@ -303,7 +257,7 @@ export default function Page() {
                         <p className="text-neutral-300"><span className="font-medium">Ditt svar:</span> {it.a}</p>
                         {it.fbBullets?.length > 0 && (
                           <ul className="list-disc pl-5 mt-1">
-                            {it.fbBullets.map((b, i) => (<li key={i} className="text-neutral-400">{b}</li>))}
+                            {it.fbBullets.map((b, i) => <li key={i} className="text-neutral-400">{b}</li>)}
                           </ul>
                         )}
                       </li>
@@ -324,16 +278,6 @@ export default function Page() {
                   >
                     Ladda ner .txt
                   </button>
-                  <button
-                    onClick={async () => {
-                      try { await navigator.clipboard.writeText(exportText(answers, report)); alert("Slutrapport kopierad till urklipp."); }
-                      catch { alert("Kunde inte kopiera – ladda ner .txt istället."); }
-                    }}
-                    className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20"
-                  >
-                    Kopiera sammanfattning
-                  </button>
-                  <button onClick={hardReset} className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20">Starta ny intervju</button>
                 </div>
               </>
             )}
