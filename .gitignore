@@ -24,3 +24,6 @@ apps/frontend/.env.local
 
 # Monorepo safeguard
 node_modules/
+
+README.backup.md
+issue-step*.md
