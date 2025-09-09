@@ -6,7 +6,7 @@ Practice interviews, answer AI-generated questions, and receive instant structur
 ---
 
 ## 🚀 Live Demo
-- **Frontend (Vercel):** ai-interview-trainer-frontend-f1gt19unm.vercel.app
+- **Frontend (Vercel):** https://ai-interview-trainer-frontend-f1gt19unm.vercel.app
 - **Backend (Render – API Docs):** https://ai-interview-trainer-api.onrender.com/docs
 
 ---
