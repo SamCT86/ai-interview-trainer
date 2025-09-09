@@ -50,8 +50,6 @@ source venv/bin/activate  # (Mac/Linux)
 pip install -r requirements.txt
 uvicorn main:app --reload
 Frontend
-bash
-Kopiera kod
 cd apps/frontend
 npm install
 npm run dev
