@@ -23,18 +23,16 @@ engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
 app = FastAPI(title="AI Interview Trainer API", version="1.1.1")
 
 # --- CORS (tillåter localhost + vercel.app) ---
+from fastapi.middleware.cors import CORSMiddleware
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "https://*.vercel.app",
-    ],
-    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_origins=["*"],  # MVP-läge – öppet
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # --- Preflight fallback (fixar 405 på OPTIONS) ---
 @app.options("/{path:path}")
