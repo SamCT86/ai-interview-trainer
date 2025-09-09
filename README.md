@@ -46,3 +46,25 @@ python -m venv venv
 .\venv\Scripts\activate
 pip install -r requirements.txt
 uvicorn main:app --reload
+
+🧪 Testing
+
+Basic backend tests with pytest (session creation, DB connection).
+Integration tests planned for /session/answer flow.
+
+🔄 CI/CD
+
+GitHub Actions for linting & tests on each commit.
+Vercel auto-deploy (frontend).
+Render auto-deploy (backend).
+
+
+📊 Metrics & Logs
+
+Supabase query logs enabled
+Vercel analytics for frontend traffic
+Render logs for API monitoring
+
+📜 License
+
+MIT License
