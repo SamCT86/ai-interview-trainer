@@ -1,15 +1,12 @@
-"use client";
+﻿"use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 export default function Page() {
-  // --- Config ---
   const backendBase = useMemo(() => {
-    // Prod från Vercel env, fallback lokalt
     return process.env.NEXT_PUBLIC_BACKEND_URL || "http://127.0.0.1:8000";
   }, []);
 
-  // --- UI State ---
   const [role, setRole] = useState("Junior Developer");
   const [sessionId, setSessionId] = useState(null);
   const [question, setQuestion] = useState(null);
@@ -19,28 +16,56 @@ export default function Page() {
   const [initLoading, setInitLoading] = useState(false);
   const [error, setError] = useState("");
 
-  // --- Helpers ---
-  const resetUI = () => {
+  // Result helpers
+  const [answers, setAnswers] = useState([]);   // [{q, a, fbBullets: []}]
+  const [finalized, setFinalized] = useState(false);
+
+  const computeScore = (items) => {
+    const bullets = items.reduce(
+      (acc, it) => acc + (Array.isArray(it.fbBullets) ? it.fbBullets.length : 0),
+      0
+    );
+    return Math.max(40, 100 - bullets * 8);
+  };
+
+  const exportText = (items) => {
+    const lines = [];
+    lines.push("AI Interview Trainer — Resultat\\n");
+    items.forEach((it, i) => {
+      lines.push(\Fråga \: \\);
+      lines.push(\Svar: \\);
+      if (it.fbBullets?.length) {
+        lines.push("Feedback:");
+        it.fbBullets.forEach((b) => lines.push(\- \\));
+      }
+      lines.push("");
+    });
+    lines.push(\Poäng (heuristisk): \/100\);
+    return lines.join("\\n");
+  };
+
+  const hardReset = () => {
     setSessionId(null);
     setQuestion(null);
     setAnswer("");
     setFeedback(null);
     setError("");
+    setAnswers([]);
+    setFinalized(false);
   };
 
-  // --- Actions ---
   const startSession = async () => {
-    resetUI();
+    hardReset();
     setInitLoading(true);
     try {
-      const res = await fetch(`${backendBase}/session/start`, {
+      const res = await fetch(\\/session/start\, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ role_profile: role }),
       });
       if (!res.ok) {
         const txt = await res.text();
-        throw new Error(`Start failed: ${res.status} ${txt}`);
+        throw new Error(\Start failed: \ \\);
       }
       const data = await res.json();
       setSessionId(data.session_id);
@@ -57,7 +82,7 @@ export default function Page() {
     if (!sessionId || !answer.trim()) return;
     setLoading(true);
     try {
-      const res = await fetch(`${backendBase}/session/answer`, {
+      const res = await fetch(\\/session/answer\, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -67,9 +92,19 @@ export default function Page() {
       });
       if (!res.ok) {
         const txt = await res.text();
-        throw new Error(`Answer failed: ${res.status} ${txt}`);
+        throw new Error(\Answer failed: \ \\);
       }
       const data = await res.json();
+
+      setAnswers((prev) => [
+        ...prev,
+        {
+          q: question || "",
+          a: answer.trim(),
+          fbBullets: data?.feedback?.bullets || [],
+        },
+      ]);
+
       setFeedback(data.feedback || null);
       setQuestion(data.next_question || null);
       setAnswer("");
@@ -81,7 +116,6 @@ export default function Page() {
     }
   };
 
-  // Enter skickar, Shift+Enter ny rad
   const onKeyDown = (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -89,7 +123,6 @@ export default function Page() {
     }
   };
 
-  // --- UI ---
   return (
     <main className="min-h-screen bg-neutral-950 text-neutral-100 p-6">
       <header className="max-w-3xl mx-auto mb-6">
@@ -111,11 +144,15 @@ export default function Page() {
             <option>Project Manager</option>
           </select>
 
+          <p className="text-sm text-neutral-400 mt-3">
+            Välj roll och klicka på <span className="font-medium text-neutral-200">Starta intervju</span> för att börja.
+          </p>
+
           <div className="mt-4 flex items-center gap-3">
             <button
               onClick={startSession}
               disabled={initLoading}
-              className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 disabled:opacity-50"
+              className="px-4 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-50"
             >
               {initLoading ? "Initierar..." : "Starta intervju"}
             </button>
@@ -190,16 +227,101 @@ export default function Page() {
           </p>
         )}
 
-        {/* End of questions */}
+        {/* End of questions / Result */}
         {sessionId && !question && !initLoading && !loading && (
-          <div className="rounded-2xl border border-neutral-800 p-4 text-center">
-            <p className="text-neutral-200 mb-2">Slut på frågor ✅</p>
-            <button
-              onClick={startSession}
-              className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20"
-            >
-              Starta om intervju
-            </button>
+          <div className="rounded-2xl border border-neutral-800 p-4 space-y-3">
+            {!finalized ? (
+              <>
+                <p className="text-neutral-200 font-medium">Slut på frågor ✅</p>
+                <p className="text-neutral-400">
+                  Klicka nedan för att generera en sammanfattning och poäng.
+                </p>
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => setFinalized(true)}
+                    className="px-4 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-500"
+                  >
+                    Visa resultat
+                  </button>
+                  <button
+                    onClick={startSession}
+                    className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20"
+                  >
+                    Starta om intervju
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <h3 className="text-lg font-semibold">🎯 Resultat</h3>
+                <p className="text-neutral-300">
+                  Poäng (heuristisk):{" "}
+                  <span className="font-bold">{computeScore(answers)}</span>/100
+                </p>
+
+                <div className="rounded-xl border border-neutral-800 p-3 bg-neutral-900 max-h-64 overflow-auto">
+                  <ol className="list-decimal pl-5 space-y-2">
+                    {answers.map((it, idx) => (
+                      <li key={idx}>
+                        <p className="text-neutral-200">
+                          <span className="font-medium">Fråga:</span> {it.q}
+                        </p>
+                        <p className="text-neutral-300">
+                          <span className="font-medium">Ditt svar:</span> {it.a}
+                        </p>
+                        {it.fbBullets?.length > 0 && (
+                          <ul className="list-disc pl-5 mt-1">
+                            {it.fbBullets.map((b, i) => (
+                              <li key={i} className="text-neutral-400">
+                                {b}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    onClick={() => {
+                      const blob = new Blob([exportText(answers)], {
+                        type: "text/plain;charset=utf-8",
+                      });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement("a");
+                      a.href = url;
+                      a.download = "ai-interview-trainer-resultat.txt";
+                      a.click();
+                      URL.revokeObjectURL(url);
+                    }}
+                    className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20"
+                  >
+                    Ladda ner .txt
+                  </button>
+                  <button
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(exportText(answers));
+                        alert("Resultat kopierat till urklipp.");
+                      } catch {
+                        alert("Kunde inte kopiera – ladda ner .txt istället.");
+                      }
+                    }}
+                    className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20"
+                  >
+                    Kopiera sammanfattning
+                  </button>
+                  <button
+                    onClick={hardReset}
+                    className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20"
+                  >
+                    Starta ny intervju
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         )}
       </section>
