@@ -1,7 +1,6 @@
 # 🎯 AI Interview Trainer
 
 Your personal AI-powered mock interview coach — practice real interviews, get instant feedback, and track your progress.
-
 > Fullstack AI app: **Next.js (App Router)** + **FastAPI** + **Supabase (Postgres + pgvector)**.  
 > Deployed to **Vercel** (frontend) & **Render** (API). CI/CD via **GitHub Actions**.
 
