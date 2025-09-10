@@ -105,7 +105,9 @@ uvicorn main:app --reload
 cd apps/frontend
 npm install
 npm run dev
+
 3) Environment (.env examples)
+
 apps/backend/.env
 
 DATABASE_URL=postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME
@@ -166,6 +168,7 @@ Ship a usable demo (not just a notebook).
 Recruiters: check the live demo
 
 ❓ FAQ
+
 Why Gemini 1.5 Flash?
 Fast, cost-effective, good for short-turn Q&A and structured feedback via prompts.
 
