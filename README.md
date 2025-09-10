@@ -10,7 +10,7 @@ Your personal AI-powered mock interview coach — practice real interviews, get 
 
 - 🌐 **Frontend (Vercel):** https://ai-interview-trainer-frontend-tawny.vercel.app  
 - ⚡ **Backend API Docs (Render/Swagger):** https://ai-interview-trainer-api.onrender.com/docs
-- 
+ 
 ---
 
 ## ✨ What It Does (Overview)
