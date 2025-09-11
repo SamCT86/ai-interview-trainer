@@ -1,5 +1,5 @@
 ﻿"use client";
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 
 export default function Page() {
   const backendBase = useMemo(() => process.env.NEXT_PUBLIC_BACKEND_URL || "http://127.0.0.1:8000", []);
@@ -8,322 +8,251 @@ export default function Page() {
   const [sessionId, setSessionId] = useState(null);
   const [question, setQuestion] = useState(null);
   const [answer, setAnswer] = useState("");
-  const [feedback, setFeedback] = useState(null);
   const [loading, setLoading] = useState(false);
   const [initLoading, setInitLoading] = useState(false);
   const [error, setError] = useState("");
-  const [answers, setAnswers] = useState([]);
-  const [finalized, setFinalized] = useState(false);
+  const [conversation, setConversation] = useState([]);
+
+  // States för slutrapporten
+  const [isFinalized, setIsFinalized] = useState(false);
   const [report, setReport] = useState(null);
   const [reportLoading, setReportLoading] = useState(false);
   const [reportError, setReportError] = useState("");
-  const [inputError, setInputError] = useState(false);
 
-  // Inline-style fallback – garanterat mot purgning
+  const endOfConversationRef = useRef(null);
+
+  // Skrolla ner automatiskt
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      const style = document.createElement("style");
-      style.innerHTML = `
-        .glow-green { box-shadow: 0 0 10px #10b981 !important; }
-        .blink-red { box-shadow: 0 0 12px #ef4444 !important; animation: pulse 0.6s; }
-      `;
-      document.head.appendChild(style);
-    }
-  }, []);
+    endOfConversationRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [conversation, report]);
 
-  // Focus input när fråga kommer
-  useEffect(() => {
-    if (question) {
-      const ta = document.querySelector("textarea");
-      ta?.focus();
-    }
-  }, [question]);
-
-  // Klick-utanför → blinka röd ram + focus
-  useEffect(() => {
-    if (!question) return;
-    const handleClickOutside = (e) => {
-      const ta = document.querySelector("textarea");
-      if (ta && !ta.contains(e.target)) {
-        setInputError(true);
-        ta.focus();
-        setTimeout(() => setInputError(false), 600);
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [question]);
-
+  // Funktion för att starta en session
   const startSession = async () => {
     setInitLoading(true);
     setError("");
-    const callStart = async (attempt = 1) => {
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 25000);
-      try {
-        const res = await fetch(`${backendBase}/session/start`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ role_profile: role }),
-          signal: ctrl.signal,
-        });
-        clearTimeout(t);
-        if (!res.ok) throw new Error("Start failed");
-        const data = await res.json();
-        setSessionId(data.session_id);
-        setQuestion(data.first_question);
-      } catch (e) {
-        clearTimeout(t);
-        if (attempt === 1) {
-          await new Promise((r) => setTimeout(r, 1500));
-          return callStart(2);
-        }
-        setError(e?.message || "Kunde inte starta session.");
-      } finally {
-        setInitLoading(false);
-      }
-    };
-    await callStart(1);
+    setConversation([]);
+    setReport(null);
+    setIsFinalized(false);
+    setSessionId(null);
+    setQuestion(null);
+
+    try {
+      const res = await fetch(`${backendBase}/session/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role_profile: role }),
+      });
+      if (!res.ok) throw new Error("Could not start session.");
+      const data = await res.json();
+      setSessionId(data.session_id);
+      setQuestion(data.first_question);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setInitLoading(false);
+    }
   };
 
+  // Funktion för att skicka svar
   const sendAnswer = async () => {
     if (!sessionId || !answer.trim()) return;
     setLoading(true);
+    setError("");
+
+    const currentTurn = { q: question, a: answer.trim(), feedback: null };
+    setConversation(prev => [...prev, currentTurn]);
+    setAnswer("");
+    setQuestion(null); // Töm frågan direkt för snabbare UI-respons
+
     try {
       const res = await fetch(`${backendBase}/session/answer`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ session_id: sessionId, answer_text: answer.trim() }),
       });
-      if (!res.ok) throw new Error("Answer failed");
+      if (!res.ok) throw new Error("Could not send answer.");
       const data = await res.json();
-      setAnswers((prev) => [...prev, { q: question || "", a: answer.trim(), fbBullets: data?.feedback?.bullets || [] }]);
-      setFeedback(data.feedback || null);
-      setQuestion(data.next_question || null);
-      setAnswer("");
+      
+      setConversation(prev => {
+          const updatedConversation = [...prev];
+          updatedConversation[updatedConversation.length - 1].feedback = data.feedback;
+          return updatedConversation;
+      });
+      
+      if (data.next_question) {
+        setQuestion(data.next_question);
+      } else {
+        setIsFinalized(true); // Intervjun är slut
+      }
     } catch (e) {
-      setError(e.message || "Kunde inte skicka svaret.");
+      setError(e.message);
     } finally {
       setLoading(false);
     }
   };
 
-  const onKeyDown = (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      if (!loading) sendAnswer();
-    }
-  };
-
+  // Effekt som hämtar rapporten när intervjun är klar
   useEffect(() => {
-    if (sessionId && !question && !initLoading && !loading && answers.length > 0) {
-      setFinalized(true);
-    }
-  }, [sessionId, question, initLoading, loading, answers.length]);
-
-  useEffect(() => {
-    if (finalized && sessionId) {
-      (async () => {
+    if (isFinalized && sessionId) {
+      const fetchReport = async () => {
         setReportLoading(true);
+        setReportError("");
         try {
           const res = await fetch(`${backendBase}/session/${sessionId}/report`);
-          if (!res.ok) throw new Error("Report failed");
+          if (!res.ok) throw new Error("Could not fetch final report.");
           setReport(await res.json());
         } catch (e) {
-          setReportError(e.message || "Kunde inte hämta rapport.");
+          setReportError(e.message);
         } finally {
           setReportLoading(false);
         }
-      })();
+      };
+      fetchReport();
     }
-  }, [finalized, sessionId, backendBase]);
+  }, [isFinalized, sessionId, backendBase]);
 
+  // Funktion för att formatera rapporten som text
+  const exportReportAsText = () => {
+      let text = `AI INTERVIEW TRAINER - SLUTRAPPORT\n`;
+      text += `=====================================\n\n`;
+      text += `Rollprofil: ${role}\n`;
+      text += `Session ID: ${sessionId}\n\n`;
+
+      conversation.forEach((turn, index) => {
+          text += `FRÅGA ${index + 1}: ${turn.q}\n`;
+          text += `DITT SVAR: ${turn.a}\n`;
+          if (turn.feedback) {
+              text += `FEEDBACK:\n`;
+              turn.feedback.bullets.forEach(b => text += `- ${b}\n`);
+              if(turn.feedback.scores) {
+                  text += `(Content: ${turn.feedback.scores.content}, Structure: ${turn.feedback.scores.structure}, Communication: ${turn.feedback.scores.communication})\n`;
+              }
+          }
+          text += `\n---\n\n`;
+      });
+
+      if (report && report.metrics) {
+          text += `SAMMANFATTNING\n`;
+          text += `-----------------\n`;
+          text += `Medelpoäng - Innehåll: ${report.metrics.avg_content}\n`;
+          text += `Medelpoäng - Struktur: ${report.metrics.avg_structure}\n`;
+          text += `Medelpoäng - Kommunikation: ${report.metrics.avg_communication}\n`;
+          text += `Totalpoäng: ${report.metrics.overall_avg} / 100\n\n`;
+          text += `Slutsats: ${report.final_summary}\n`;
+      }
+      return text;
+  };
+  
+  const downloadReport = () => {
+      const textContent = exportReportAsText();
+      const blob = new Blob([textContent], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `slutrapport-${sessionId}.txt`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+  };
+
+  // --- RENDERINGS-LOGIK ---
   return (
     <main className="min-h-screen bg-neutral-950 text-neutral-100 p-6">
-      <header className="max-w-3xl mx-auto mb-6">
+      <header className="max-w-3xl mx-auto mb-6 text-center">
         <h1 className="text-2xl font-semibold">AI Interview Trainer</h1>
         <p className="text-neutral-400">MVP – Next.js + FastAPI</p>
       </header>
 
       <section className="max-w-3xl mx-auto space-y-4">
-        <div className="rounded-2xl border border-neutral-800 p-4">
-          <label className="block text-sm mb-2">Rollprofil</label>
-          <select
-            className="w-full bg-neutral-900 border border-neutral-800 rounded-xl p-2"
-            value={role}
-            onChange={(e) => setRole(e.target.value)}
-            disabled={initLoading || loading}
-          >
-            <option>Junior Developer</option>
-            <option>Project Manager</option>
-          </select>
-          <p className="text-sm text-neutral-400 mt-3">Välj roll och klicka på <span className="font-medium text-neutral-200">Starta intervju</span>.</p>
-          <div className="mt-4 flex items-center gap-3">
-            <button
-              onClick={startSession}
-              disabled={initLoading}
-              style={{
-                backgroundColor: initLoading ? "#6b7280" : "#10b981",
-                color: "#ffffff",
-                padding: "0.5rem 1rem",
-                borderRadius: "0.75rem",
-                border: "none",
-                cursor: initLoading ? "not-allowed" : "pointer",
-                opacity: initLoading ? 0.6 : 1,
-              }}
-            >
-              {initLoading ? "Startar…" : "Starta intervju"}
-            </button>
-            {sessionId && <span className="text-xs text-neutral-400">Session: {sessionId}</span>}
-          </div>
-          {initLoading && (
+        {/* Startvy */}
+        {!sessionId && (
+          <div className="rounded-2xl border border-neutral-800 p-4">
+            <label className="block text-sm mb-2">Rollprofil</label>
+            <select className="w-full bg-neutral-900 border border-neutral-800 rounded-xl p-2" value={role} onChange={(e) => setRole(e.target.value)}>
+              <option>Junior Developer</option>
+              <option>Project Manager</option>
+            </select>
             <div className="mt-4">
-              <div className="w-full bg-neutral-800 rounded-full h-2.5">
-                <div className="bg-emerald-500 h-2.5 rounded-full animate-pulse" style={{ width: "100%" }}></div>
-              </div>
-              <p className="text-xs text-neutral-400 mt-2">Väcker backend – tar max 15 s första gången…</p>
-            </div>
-          )}
-        </div>
-
-        <div className="rounded-2xl border border-neutral-800 p-4">
-          <h2 className="text-lg font-medium mb-2" style={{ color: question ? "#10b981" : "#a3a3a3" }}>Fråga</h2>
-          <div className="min-h-12 text-neutral-200">
-            {question ? (
-              <p>{question}</p>
-            ) : initLoading ? (
-              <p>Initialiserar session…</p>
-            ) : (
-              <p className="text-neutral-500">Ingen aktiv fråga ännu.</p>
-            )}
-          </div>
-        </div>
-
-        <div
-          className="rounded-2xl border border-neutral-800 p-4 relative"
-          style={{ borderColor: inputError ? "#ef4444" : "#404040" }}
-        >
-          <h2 className="text-lg font-medium mb-2" style={{ color: question ? "#10b981" : "#a3a3a3" }}>Ditt svar</h2>
-          <textarea
-            placeholder={question || "Skriv ditt svar här… (Shift+Enter för ny rad)"}
-            className="w-full h-32 bg-neutral-900 border rounded-xl p-3 focus:outline-none placeholder:text-neutral-500"
-            style={{
-              borderColor: inputError ? "#ef4444" : "#525252",
-              boxShadow: inputError ? "0 0 10px #ef4444" : "none",
-            }}
-            value={answer}
-            onChange={(e) => setAnswer(e.target.value)}
-            onKeyDown={onKeyDown}
-            disabled={!sessionId || loading}
-          />
-          <div className="mt-3 flex justify-end">
-            <button
-              onClick={sendAnswer}
-              disabled={!sessionId || loading || !answer.trim()}
-              style={{
-                backgroundColor: "#ffffff1a",
-                color: "#fff",
-                padding: "0.5rem 1rem",
-                borderRadius: "0.75rem",
-                border: "1px solid #ffffff1a",
-                cursor: !sessionId || loading || !answer.trim() ? "not-allowed" : "pointer",
-                opacity: !sessionId || loading || !answer.trim() ? 0.5 : 1,
-              }}
-              onMouseEnter={(e) => !loading && (e.currentTarget.style.backgroundColor = "#ffffff2a")}
-              onMouseLeave={(e) => !loading && (e.currentTarget.style.backgroundColor = "#ffffff1a")}
-            >
-              {loading ? "Skickar…" : "Skicka"}
-            </button>
-          </div>
-        </div>
-
-        <div className="rounded-2xl border border-neutral-800 p-4">
-          <h2 className="text-lg font-medium mb-2">Feedback</h2>
-          {!feedback ? (
-            <p className="text-neutral-500">Ingen feedback ännu.</p>
-          ) : (
-            <ul className="list-disc pl-6 space-y-1">
-              {feedback.bullets?.map((b, i) => (
-                <li key={i} className="text-neutral-300">
-                  {b}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        {error && <p className="mt-2 text-red-500 text-center">Error: {error}</p>}
-
-        {sessionId && !question && !initLoading && !loading && answers.length > 0 && (
-          <div className="rounded-2xl border border-neutral-800 p-4 space-y-3">
-            <h3 className="text-lg font-semibold">🎯 Slutrapport</h3>
-            {reportLoading && <p className="text-neutral-400">Genererar rapport…</p>}
-            {reportError && <p className="text-red-400">Rapportfel: {reportError}</p>}
-            {report?.metrics && (
-              <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
-                <div className="rounded-xl border border-neutral-800 p-3 bg-neutral-900">
-                  <p className="text-xs text-neutral-400">Content</p>
-                  <p className="text-xl font-semibold">{report.metrics.avg_content}</p>
-                </div>
-                <div className="rounded-xl border border-neutral-800 p-3 bg-neutral-900">
-                  <p className="text-xs text-neutral-400">Structure</p>
-                  <p className="text-xl font-semibold">{report.metrics.avg_structure}</p>
-                </div>
-                <div className="rounded-xl border border-neutral-800 p-3 bg-neutral-900">
-                  <p className="text-xs text-neutral-400">Communication</p>
-                  <p className="text-xl font-semibold">{report.metrics.avg_communication}</p>
-                </div>
-                <div className="rounded-xl border border-neutral-800 p-3 bg-neutral-900">
-                  <p className="text-xs text-neutral-400">Overall</p>
-                  <p className="text-xl font-semibold">{report.metrics.overall_avg}</p>
-                </div>
-              </div>
-            )}
-            <div className="rounded-xl border border-neutral-800 p-3 bg-neutral-900 max-h-64 overflow-auto">
-              <ol className="list-decimal pl-5 space-y-2">
-                {answers.map((it, idx) => (
-                  <li key={idx}>
-                    <p className="text-neutral-200">
-                      <span className="font-medium">Fråga:</span> {it.q}
-                    </p>
-                    <p className="text-neutral-300">
-                      <span className="font-medium">Ditt svar:</span> {it.a}
-                    </p>
-                    {it.fbBullets?.length > 0 && (
-                      <ul className="list-disc pl-5 mt-1">
-                        {it.fbBullets.map((b, i) => (
-                          <li key={i} className="text-neutral-400">
-                            {b}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </li>
-                ))}
-              </ol>
-            </div>
-            <div className="flex flex-wrap gap-3">
-              <button
-                onClick={() => {
-                  const blob = new Blob([exportText(answers, report)], { type: "text/plain;charset=utf-8" });
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement("a");
-                  a.href = url;
-                  a.download = "ai-interview-trainer-slutrapport.txt";
-                  a.click();
-                  URL.revokeObjectURL(url);
-                }}
-                className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20"
-              >
-                Ladda ner .txt
+              <button onClick={startSession} disabled={initLoading} className="px-4 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-50">
+                {initLoading ? "Startar..." : "Starta intervju"}
               </button>
             </div>
           </div>
         )}
 
-        <footer className="max-w-3xl mx-auto mt-10 text-xs text-neutral-500">
-    Backend: {backendBase}
-</footer>
+        {/* Konversationshistorik */}
+        {conversation.map((turn, index) => (
+            <div key={index} className="space-y-2 p-4 rounded-lg bg-neutral-900 border border-neutral-800">
+                <p className="font-semibold text-emerald-400">Fråga: {turn.q}</p>
+                <p className="pl-4 text-neutral-300">Ditt svar: {turn.a}</p>
+                {turn.feedback && (
+                    <div className="pl-4 pt-2 mt-2 border-t border-neutral-700">
+                        <p className="font-semibold text-sky-400">Feedback:</p>
+                        <ul className="list-disc pl-8 text-neutral-400">
+                            {turn.feedback.bullets.map((b, i) => <li key={i}>{b}</li>)}
+                        </ul>
+                        {turn.feedback.scores && (
+                            <div className="grid grid-cols-3 gap-2 text-center mt-2">
+                                <div className="bg-neutral-800 p-1 rounded"><span className="text-xs">Content:</span> <span className="font-bold">{turn.feedback.scores.content}</span></div>
+                                <div className="bg-neutral-800 p-1 rounded"><span className="text-xs">Structure:</span> <span className="font-bold">{turn.feedback.scores.structure}</span></div>
+                                <div className="bg-neutral-800 p-1 rounded"><span className="text-xs">Communication:</span> <span className="font-bold">{turn.feedback.scores.communication}</span></div>
+                            </div>
+                        )}
+                    </div>
+                )}
+            </div>
+        ))}
+        <div ref={endOfConversationRef}></div>
+
+        {/* Intervju-input eller Slutrapport */}
+        {sessionId && (
+          <div className="rounded-2xl border border-neutral-800 p-4">
+            {question && !isFinalized && (
+              <>
+                <h2 className="text-lg font-medium mb-2">Aktuell Fråga</h2>
+                <p className="text-neutral-200 mb-4">{question}</p>
+                <textarea className="w-full h-32 bg-neutral-900 border border-neutral-700 rounded-xl p-3" placeholder="Skriv ditt svar här..." value={answer} onChange={(e) => setAnswer(e.target.value)} disabled={loading}/>
+                <div className="mt-3 flex justify-end">
+                  <button onClick={sendAnswer} disabled={loading || !answer.trim()} className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 disabled:opacity-50">
+                    {loading ? "Analyserar..." : "Skicka Svar"}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {isFinalized && (
+              <div className="text-center">
+                <h2 className="text-xl font-bold text-emerald-400 mb-4">Intervju Slutförd!</h2>
+                {reportLoading && <p>Genererar slutrapport...</p>}
+                {reportError && <p className="text-red-500">{reportError}</p>}
+                {report && (
+                    <div className="animate-fade-in">
+                        <p className="mb-4">{report.final_summary}</p>
+                        <div className="grid grid-cols-4 gap-2 text-center mb-4">
+                            <div className="bg-neutral-900 p-2 rounded">
+                                <p className="text-xs">Content</p><p className="font-bold text-lg">{report.metrics.avg_content}</p>
+                            </div>
+                            <div className="bg-neutral-900 p-2 rounded">
+                                <p className="text-xs">Structure</p><p className="font-bold text-lg">{report.metrics.avg_structure}</p>
+                            </div>
+                            <div className="bg-neutral-900 p-2 rounded">
+                                <p className="text-xs">Communication</p><p className="font-bold text-lg">{report.metrics.avg_communication}</p>
+                            </div>
+                            <div className="bg-emerald-800 p-2 rounded">
+                                <p className="text-xs">Overall</p><p className="font-bold text-lg">{report.metrics.overall_avg}</p>
+                            </div>
+                        </div>
+                        <button onClick={downloadReport} className="px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-500">
+                          Ladda ner Rapport (.txt)
+                        </button>
+                    </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+        {error && <p className="mt-2 text-red-500 text-center">Error: {error}</p>}
       </section>
     </main>
   );
