@@ -19,11 +19,13 @@ if not DATABASE_URL:
 engine = create_async_engine(DATABASE_URL)
 app = FastAPI(title="AI Interview Trainer API", version="1.0.0")
 
-# --- CORS Middleware ---
-# Tillåter vår frontend att anropa API:et
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "https://ai-interview-trainer-front-git-main-sarmads-projects-f3142150.vercel.app"],
+    allow_origins=[
+        "http://localhost:3000", 
+        "http://127.0.0.1:3000"
+    ],
+    allow_origin_regex=r"https://.*\.vercel\.app", # TILLÅTER ALLA VERCEL-DOMÄNER
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
