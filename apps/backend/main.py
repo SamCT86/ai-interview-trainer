@@ -1,43 +1,34 @@
-﻿import os, uuid, logging
+﻿import os, uuid, logging, asyncio
 from typing import Dict, List, Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from datetime import datetime
 
-# ===== App & CORS =====
-app = FastAPI(title="AI Interview Trainer API", version="1.0.0")
+app = FastAPI(title="AI Interview Trainer API", version="1.1.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # MVP: öppet; strama åt senare
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ===== DB setup (try/fallback) =====
+# ---------- DB (lazy init) ----------
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy import text
-
 DATABASE_URL = os.getenv("DATABASE_URL", "")
-DB_AVAILABLE = False
 engine = None
 if DATABASE_URL:
     try:
-        engine = create_async_engine(
-            DATABASE_URL,
-            pool_pre_ping=True,
-            pool_recycle=180,
-        )
-        DB_AVAILABLE = True
-    except Exception:
-        logging.exception("DB engine init failed; using in-memory fallback")
-        DB_AVAILABLE = False
+        engine = create_async_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=180)
+    except Exception as e:
+        logging.exception("DB init failed – using in-memory fallback")
 
-# ===== In-memory store =====
+# ---------- In-memory store ----------
 mem_sessions: Dict[str, Dict] = {}
 
-# ===== Questions =====
+# ---------- Questions ----------
 FIRST_QUESTIONS = {
     "Junior Developer": "Berätta kort om ett projekt där du använde React.",
     "Project Manager": "Hur prioriterar du backloggen inför en release?",
@@ -53,7 +44,7 @@ FOLLOWUP = {
     ],
 }
 
-# ===== Models =====
+# ---------- Models ----------
 class StartPayload(BaseModel):
     role_profile: str
 
@@ -61,21 +52,21 @@ class AnswerPayload(BaseModel):
     session_id: str
     answer_text: str
 
-# ===== Helpers =====
+# ---------- Helpers ----------
 async def ensure_schema():
-    if not DB_AVAILABLE:
+    if not engine:
         return
     async with engine.begin() as conn:
         await conn.execute(text("""
-        CREATE TABLE IF NOT EXISTS sessions (
-          id TEXT PRIMARY KEY,
-          role TEXT,
-          created_at TIMESTAMP
-        );
+            CREATE TABLE IF NOT EXISTS sessions (
+                id TEXT PRIMARY KEY,
+                role TEXT,
+                created_at TIMESTAMP
+            );
         """))
 
 def make_feedback(answer: str) -> List[str]:
-    bullets: List[str] = []
+    bullets = []
     if len(answer.strip()) < 20:
         bullets.append("Utveckla svaret med mer konkreta detaljer.")
     if "test" not in answer.lower():
@@ -84,30 +75,21 @@ def make_feedback(answer: str) -> List[str]:
         bullets.append("Reflektera över samarbete eller kommunikation.")
     return bullets
 
-# ===== Routes =====
+# ---------- Routes ----------
 @app.get("/")
 async def health():
-    return {"message": "AI Interview Trainer API is running", "db": DB_AVAILABLE}
+    return {"message": "AI Interview Trainer API is running"}
 
 @app.post("/session/start")
 async def start_session(p: StartPayload):
     role = p.role_profile or "Junior Developer"
-    q = FIRST_QUESTIONS.get(role, FIRST_QUESTIONS["Junior Developer"])
     sid = str(uuid.uuid4())
 
-    try:
-        await ensure_schema()
-        if DB_AVAILABLE:
-            async with engine.begin() as conn:
-                await conn.execute(
-                    text("INSERT INTO sessions (id, role, created_at) VALUES (:id,:role,:ts)"),
-                    {"id": sid, "role": role, "ts": datetime.utcnow()},
-                )
-    except Exception:
-        logging.exception("DB write failed, serving in-memory this session")
+    # Starta DB i bakgrunden – vi väntar INTE
+    asyncio.create_task(ensure_schema())
 
     mem_sessions[sid] = {"role": role, "idx": 0, "answers": []}
-    return {"session_id": sid, "first_question": q}
+    return {"session_id": sid, "first_question": FIRST_QUESTIONS[role]}
 
 @app.post("/session/answer")
 async def send_answer(p: AnswerPayload):
@@ -121,9 +103,8 @@ async def send_answer(p: AnswerPayload):
     fb = make_feedback(p.answer_text)
 
     follow = FOLLOWUP.get(role, [])
-    next_q: Optional[str] = None
-    if idx < len(follow):
-        next_q = follow[idx]
+    next_q = follow[idx] if idx < len(follow) else None
+    if next_q:
         s["idx"] += 1
 
     return {"feedback": {"bullets": fb}, "next_question": next_q}
@@ -142,5 +123,5 @@ async def report(sid: str):
             "avg_communication": overall,
             "overall_avg": overall,
         },
-        "final_summary": "Demo-rapport (fallback): förbättra detaljer, tester och team-samarbete.",
+        "final_summary": "Demo-rapport: förbättra detaljer, tester och team-samarbete.",
     }
