@@ -4,8 +4,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from datetime import datetime
+import openai
 
-app = FastAPI(title="AI Interview Trainer API", version="1.1.0")
+# ---------- Env ----------
+openai.api_key = os.getenv("OPENAI_API_KEY", "")
+
+app = FastAPI(title="AI Interview Trainer API", version="2.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -14,7 +18,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------- DB (lazy init) ----------
+# ---------- DB (lazy) ----------
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy import text
 DATABASE_URL = os.getenv("DATABASE_URL", "")
@@ -28,22 +32,6 @@ if DATABASE_URL:
 # ---------- In-memory store ----------
 mem_sessions: Dict[str, Dict] = {}
 
-# ---------- Questions ----------
-FIRST_QUESTIONS = {
-    "Junior Developer": "Berätta kort om ett projekt där du använde React.",
-    "Project Manager": "Hur prioriterar du backloggen inför en release?",
-}
-FOLLOWUP = {
-    "Junior Developer": [
-        "Hur testade du din React-kod?",
-        "Hur hanterade du state management?",
-    ],
-    "Project Manager": [
-        "Hur hanterade du risker i projektet?",
-        "Hur följde du upp teamets velocity?",
-    ],
-}
-
 # ---------- Models ----------
 class StartPayload(BaseModel):
     role_profile: str
@@ -52,76 +40,57 @@ class AnswerPayload(BaseModel):
     session_id: str
     answer_text: str
 
-# ---------- Helpers ----------
-async def ensure_schema():
-    if not engine:
-        return
-    async with engine.begin() as conn:
-        await conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS sessions (
-                id TEXT PRIMARY KEY,
-                role TEXT,
-                created_at TIMESTAMP
-            );
-        """))
+# ---------- LLM helpers ----------
+SYSTEM_PROMPTS = {
+    "Junior Developer": "You are a friendly senior dev interviewer. Ask ONE concise, open question about React, testing, or teamwork. Avoid repeats.",
+    "Project Manager": "You are a senior PM. Ask ONE concise question about backlog, risk, or stakeholder communication. Avoid repeats.",
+}
 
-def make_feedback(answer: str) -> List[str]:
-    bullets = []
-    if len(answer.strip()) < 20:
-        bullets.append("Utveckla svaret med mer konkreta detaljer.")
-    if "test" not in answer.lower():
-        bullets.append("Nämn hur du verifierade kvalitet (tester/QA).")
-    if "team" not in answer.lower():
-        bullets.append("Reflektera över samarbete eller kommunikation.")
-    return bullets
+def build_messages(role: str, history: List[str]) -> List[dict]:
+    msgs = [{"role": "system", "content": SYSTEM_PROMPTS.get(role, SYSTEM_PROMPTS["Junior Developer"])}]
+    for h in history:
+        msgs.append({"role": "user", "content": h})
+    return msgs
+
+def ask_llm(role: str, history: List[str]) -> str:
+    if not openai.api_key:
+        # Fallback – unik varje gång
+        return f"Tell me about a {role.lower()} challenge you solved recently – be specific."
+
+    msgs = build_messages(role, history)
+    try:
+        resp = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=msgs,
+            max_tokens=80,
+            temperature=0.9,
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception as e:
+        logging.exception("LLM failed – fallback")
+        return f"Describe a recent {role.lower()} situation – what did you do?"
 
 # ---------- Routes ----------
 @app.get("/")
 async def health():
-    return {"message": "AI Interview Trainer API is running"}
+    return {"message": "AI Interview Trainer API is running", "llm": bool(openai.api_key)}
 
 @app.post("/session/start")
 async def start_session(p: StartPayload):
     role = p.role_profile or "Junior Developer"
     sid = str(uuid.uuid4())
-
-    # Starta DB i bakgrunden – vi väntar INTE
-    asyncio.create_task(ensure_schema())
-
-    mem_sessions[sid] = {"role": role, "idx": 0, "answers": []}
-    return {"session_id": sid, "first_question": FIRST_QUESTIONS[role]}
+    asyncio.create_task(ensure_schema())  # non-blocking
+    first = ask_llm(role, [])
+    mem_sessions[sid] = {"role": role, "history": [], "idx": 0}
+    return {"session_id": sid, "first_question": first}
 
 @app.post("/session/answer")
 async def send_answer(p: AnswerPayload):
     s = mem_sessions.get(p.session_id)
     if not s:
         raise HTTPException(404, "Session not found")
-
-    role = s["role"]
-    idx = s["idx"]
-    s["answers"].append(p.answer_text)
-    fb = make_feedback(p.answer_text)
-
-    follow = FOLLOWUP.get(role, [])
-    next_q = follow[idx] if idx < len(follow) else None
-    if next_q:
-        s["idx"] += 1
-
-    return {"feedback": {"bullets": fb}, "next_question": next_q}
-
-@app.get("/session/{sid}/report")
-async def report(sid: str):
-    s = mem_sessions.get(sid)
-    if not s:
-        raise HTTPException(404, "Session not found")
-    penalty = sum(len(make_feedback(a)) for a in s["answers"])
-    overall = max(40, 100 - penalty * 8)
-    return {
-        "metrics": {
-            "avg_content": overall,
-            "avg_structure": overall,
-            "avg_communication": overall,
-            "overall_avg": overall,
-        },
-        "final_summary": "Demo-rapport: förbättra detaljer, tester och team-samarbete.",
-    }
+    s["history"].append(p.answer_text)
+    next_q = ask_llm(s["role"], s["history"])
+    s["history"].append(next_q)
+    feedback = [
+        "Utveckla gärna med konkreta exempel." if len(p.answer_text) 

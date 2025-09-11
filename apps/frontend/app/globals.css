@@ -45,3 +45,15 @@ body {
     }
   }
 }
+
+.is-active {
+  border-color: #3b82f6 !important; /* Blue-500 */
+  box-shadow: 0 0 15px rgba(59, 130, 246, 0.3);
+  transition: all 0.3s ease-in-out;
+}
+
+.is-dimmed {
+  opacity: 0.4;
+  pointer-events: none; /* Gör sektionen icke-interaktiv */
+  transition: opacity 0.3s ease-in-out;
+}
